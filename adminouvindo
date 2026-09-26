@@ -1,0 +1,77 @@
+ubuntu@vcn-vexa-vnic:~/vexa$ docker exec vexa-lite sh -c 'grep -n -A20 -B5 "admin" /etc/supervisor/conf.d/vexa.conf'
+1-; =============================================================================
+2-; Vexa Lite (v0.12) — single-container process supervisor
+3-; =============================================================================
+4-; Runs the v0.12 control plane in ONE container: the four long-running Python services
+5:; (admin-api · runtime · meeting-api · gateway) + the agent control plane (agent-api) +
+6-; over an internal redis + a shared Xvfb/PulseAudio audio-video stack.
+7-;
+8-; The bot and the agent WORKER are NOT supervised here: the runtime (RUNTIME_BACKEND=process)
+9-; spawns them as CHILD PROCESSES on demand via the in-container launchers
+10-; (BOT_COMMAND / AGENT_WORKER_COMMAND — defaulted by the entrypoint to the /usr/local/bin
+11-; launchers, interpolated here via %(ENV_…)s so operator-provided container env wins),
+12-; sharing this container's display/audio — the lite analog of compose's docker-socket spawn.
+13-; =============================================================================
+14-[supervisord]
+15-nodaemon=true
+16-logfile=/var/log/supervisor/supervisord.log
+17-pidfile=/var/run/supervisord.pid
+18-childlogdir=/var/log/supervisor
+19-logfile_maxbytes=50MB
+20-logfile_backups=3
+21-loglevel=info
+22-
+23-; supervisorctl wiring — without these sections `supervisorctl` (the README's debug entrypoint) has
+24-; no socket to talk to. This config IS the main file (run directly), so it carries them itself.
+25-[unix_http_server]
+--
+117-stdout_logfile=/dev/stdout
+118-stderr_logfile=/dev/stderr
+119-stdout_logfile_maxbytes=0
+120-stderr_logfile_maxbytes=0
+121-
+122:; ─── admin-api (:8001) — identity: users/tokens + /internal/validate (the gateway's authz oracle) ──
+123:[program:admin-api]
+124:command=/opt/venvs/admin/bin/python -m admin_api
+125:directory=/app/admin-api
+126-autostart=true
+127-autorestart=true
+128-priority=30
+129-startsecs=10
+130-startretries=3
+131-stdout_logfile=/dev/stdout
+132-stderr_logfile=/dev/stderr
+133-stdout_logfile_maxbytes=0
+134-stderr_logfile_maxbytes=0
+135:environment=PYTHONUNBUFFERED="1",PYTHONPATH="/app/admin-api/src",HOST="127.0.0.1",PORT="8001",LOG_LEVEL="%(ENV_LOG_LEVEL)s",DB_HOST="%(ENV_DB_HOST)s",DB_PORT="%(ENV_DB_PORT)s",DB_NAME="%(ENV_DB_NAME)s",DB_USER="%(ENV_DB_USER)s",DB_PASSWORD="%(ENV_DB_PASSWORD)s",ADMIN_API_TOKEN="%(ENV_ADMIN_API_TOKEN)s",INTERNAL_API_SECRET="%(ENV_INTERNAL_API_SECRET)s"
+136-
+137-; ─── runtime (:8090) — runtime.v1; spawns bot + agent-worker as CHILD PROCESSES (process backend) ──
+138-[program:runtime]
+139-command=/opt/venvs/runtime/bin/python -m runtime_kernel
+140-directory=/app/runtime
+141-autostart=true
+142-autorestart=true
+143-priority=35
+144-startsecs=10
+145-startretries=3
+146-stdout_logfile=/dev/stdout
+147-stderr_logfile=/dev/stderr
+148-stdout_logfile_maxbytes=0
+149-stderr_logfile_maxbytes=0
+150-environment=PYTHONUNBUFFERED="1",PYTHONPATH="/app/runtime/src",HOST="127.0.0.1",PORT="8090",LOG_LEVEL="%(ENV_LOG_LEVEL)s",RUNTIME_BACKEND="process",REDIS_URL="%(ENV_REDIS_URL)s",DISPLAY=":99",BOT_COMMAND="%(ENV_BOT_COMMAND)s",AGENT_WORKER_COMMAND="%(ENV_AGENT_WORKER_COMMAND)s",BROWSER_IMAGE="lite-process",AGENT_IMAGE="lite-process",INTERNAL_API_SECRET="%(ENV_INTERNAL_API_SECRET)s",HOST_CLAUDE_CREDENTIALS="%(ENV_HOST_CLAUDE_CREDENTIALS)s",ANTHROPIC_API_KEY="%(ENV_ANTHROPIC_API_KEY)s",ANTHROPIC_AUTH_TOKEN="%(ENV_ANTHROPIC_AUTH_TOKEN)s",ANTHROPIC_BASE_URL="%(ENV_ANTHROPIC_BASE_URL)s",ANTHROPIC_MODEL="%(ENV_ANTHROPIC_MODEL)s",ANTHROPIC_DEFAULT_OPUS_MODEL="%(ENV_ANTHROPIC_DEFAULT_OPUS_MODEL)s",ANTHROPIC_DEFAULT_SONNET_MODEL="%(ENV_ANTHROPIC_DEFAULT_SONNET_MODEL)s",ANTHROPIC_DEFAULT_HAIKU_MODEL="%(ENV_ANTHROPIC_DEFAULT_HAIKU_MODEL)s"
+151-
+152-; ─── agent-api (:8100) — the unit control plane: /invocations · /api/chat (SSE) · /api/sessions ────
+153-; LITE OVERRIDES: every VEXA_*_API_URL default in agent config points at a COMPOSE service hostname
+154-; (runtime-api/agent-api/meeting-api), which does NOT resolve in the single-container lite deploy —
+155-; each must be overridden to localhost here. Missing VEXA_MEETING_API_URL made the live-transcript
+--
+224-stderr_logfile_maxbytes=0
+225-environment=NODE_ENV="production",PORT="3001",HOST="0.0.0.0",AGENT_API_URL="http://localhost:8100",GATEWAY_URL="http://localhost:8056",VEXA_API_URL="http://localhost:8056",VEXA_ADMIN_API_URL="http://localhost:8001",VEXA_ADMIN_API_KEY="%(ENV_ADMIN_API_TOKEN)s",VEXA_INTERNAL_API_SECRET="%(ENV_INTERNAL_API_SECRET)s",VEXA_API_KEY="%(ENV_VEXA_API_KEY)s",VEXA_BOT_API_KEY="%(ENV_VEXA_BOT_API_KEY)s",TRANSCRIPTION_SERVICE_URL="%(ENV_TRANSCRIPTION_SERVICE_URL)s",TRANSCRIPTION_SERVICE_TOKEN="%(ENV_TRANSCRIPTION_SERVICE_TOKEN)s",TRANSCRIPTION_MODEL="%(ENV_TRANSCRIPTION_MODEL)s",NEXTAUTH_URL="%(ENV_TERMINAL_PUBLIC_URL)s",NEXTAUTH_SECRET="%(ENV_NEXTAUTH_SECRET)s"
+226-
+227-; ─── process group ────────────────────────────────────────────────────────────────────────────────
+228-[group:vexa]
+229:programs=redis,xvfb,fluxbox,pulseaudio,pulseaudio-setup,x11vnc,websockify,admin-api,runtime,agent-api,meeting-api,gateway,terminal
+230-priority=999
+ubuntu@vcn-vexa-vnic:~/vexa$ docker exec vexa-lite sh -c 'find /var/log -maxdepth 3 -type f 2>/dev/null | grep -Ei "admin|vexa|supervisor" | sort'
+/var/log/supervisor/supervisord.log
+ubuntu@vcn-vexa-vnic:~/vexa$
